@@ -4,7 +4,11 @@
 
 ![field](docs/screenshots/field.jpg)
 
-## 실행
+## 바로 플레이
+
+👉 **https://lhc6835-hue.github.io/sniper-bunny/** (크롬·엣지·파이어폭스 권장)
+
+## 로컬 실행
 
 ```bash
 cd game

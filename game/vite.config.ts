@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  // GitHub Pages serves the game under /sniper-bunny/
+  base: process.env.BASE_PATH ?? '/',
   server: {
     host: '127.0.0.1',
     port: 5188,

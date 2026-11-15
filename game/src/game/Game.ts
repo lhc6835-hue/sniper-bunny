@@ -94,7 +94,10 @@ export class Game {
 
   async init(): Promise<void> {
     const fill = document.getElementById('loading-fill')!;
-    await this.assets.load((p) => (fill.style.width = `${(p * 100).toFixed(0)}%`));
+    await Promise.all([
+      this.assets.load((p) => (fill.style.width = `${(p * 100).toFixed(0)}%`)),
+      this.audio.preload(),
+    ]);
     const pmrem = new THREE.PMREMGenerator(this.renderer);
     const env = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
     this.scene.environment = env;
@@ -169,6 +172,8 @@ export class Game {
 
   private startOrResume(): void {
     this.audio.unlock();
+    this.audio.uiClick();
+    this.audio.playMusic('battle');
     this.input.requestLock();
     if (this.state === 'menu') this.newRun();
     this.state = 'playing';
@@ -179,6 +184,7 @@ export class Game {
   private pause(): void {
     this.state = 'paused';
     this.audio.chargeStop();
+    this.audio.playMusic('menu');
     this.charging = false;
     const overlay = document.getElementById('overlay')!;
     overlay.classList.remove('hidden');
@@ -574,6 +580,8 @@ export class Game {
   private die(): void {
     this.state = 'dead';
     this.deadTimer = 0;
+    this.audio.playMusic(null);
+    this.audio.gameOver();
     this.charging = false;
     this.audio.chargeStop();
   }
@@ -586,6 +594,7 @@ export class Game {
     document.getElementById('overlay')!.classList.remove('hidden');
     document.getElementById('menu')!.classList.add('hidden');
     document.getElementById('gameover')!.classList.remove('hidden');
+    this.audio.playMusic('menu');
   }
 
   private onVmEvent(e: VmEvent): void {
@@ -730,7 +739,7 @@ export class Game {
         game.player.yaw = Math.atan2(-d.x, -d.z);
         game.player.pitch = Math.atan2(d.y, Math.hypot(d.x, d.z));
       },
-      debug: () => ({ scene: game.scene, camera: game.camera, vm: game.vm, THREE, boxes: game.world.colliders.boxes }),
+      debug: () => ({ scene: game.scene, camera: game.camera, vm: game.vm, audio: game.audio, THREE, boxes: game.world.colliders.boxes }),
       /** Find a yaw from (x,z) with no collider for `dist` meters. */
       clearYaw: (x: number, z: number, dist: number) => {
         for (let i = 0; i < 72; i += 1) {

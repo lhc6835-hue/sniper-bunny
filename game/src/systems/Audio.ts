@@ -1,23 +1,80 @@
 import * as THREE from 'three';
 
-type Ctx = AudioContext;
+const BASE = `${import.meta.env.BASE_URL}assets/audio/`;
 
-/** Procedural Web Audio SFX. Everything is synthesized; no external files. */
+/** Kenney CC0 SFX (sfx/) + OpenGameArt CC0 music (music/). */
+const SFX = [
+  'footstep_grass_000', 'footstep_grass_001', 'footstep_grass_002', 'footstep_grass_003', 'footstep_grass_004',
+  'impactSoft_heavy_000', 'impactSoft_heavy_001', 'impactSoft_medium_000',
+  'impactMetal_heavy_000', 'impactMetal_heavy_001', 'impactMetal_heavy_002',
+  'impactMetal_light_000', 'impactMetal_light_001', 'impactMetal_light_002', 'impactMetal_medium_000',
+  'impactBell_heavy_000', 'impactBell_heavy_001', 'impactPunch_heavy_000', 'impactPunch_heavy_001', 'impactPunch_medium_000',
+  'impactPlate_light_000', 'impactPlate_medium_000', 'impactGlass_light_000', 'impactGlass_light_001', 'impactTin_medium_000',
+  'impactMining_000', 'impactGeneric_light_000',
+  'laserLarge_000', 'laserLarge_001', 'laserLarge_002', 'laserSmall_000',
+  'explosionCrunch_000', 'explosionCrunch_001', 'explosionCrunch_002', 'lowFrequency_explosion_000', 'lowFrequency_explosion_001',
+  'forceField_000', 'forceField_001', 'thrusterFire_000', 'impactMetal_000', 'impactMetal_001', 'computerNoise_000',
+  'tick_001', 'tick_002', 'click_002', 'confirmation_001', 'confirmation_002', 'error_004', 'glitch_001',
+  'phaserDown1', 'phaserUp1', 'phaserUp3', 'powerUp2', 'powerUp7', 'zapThreeToneUp', 'lowDown',
+  'drawKnife1', 'drawKnife2', 'drawKnife3', 'knifeSlice', 'knifeSlice2', 'metalClick', 'metalLatch',
+  'beltHandle1', 'beltHandle2', 'cloth1', 'cloth2', 'cloth3', 'chop', 'dropLeather',
+  'jingles_HIT00', 'jingles_HIT05', 'jingles_HIT10', 'jingles_STEEL00', 'jingles_STEEL05', 'jingles_NES03', 'jingles_PIZZI10', 'jingles_SAX05',
+] as const;
+
+type Sfx = (typeof SFX)[number];
+type MusicName = 'menu' | 'battle';
+
+interface PlayOpts {
+  gain?: number;
+  rate?: number;
+  rateVar?: number;
+  pos?: THREE.Vector3;
+  reverb?: number;
+  delay?: number;
+  /** World sounds get pitched down by slow motion. */
+  world?: boolean;
+}
+
+/** Sample-based audio with a little synthesis for layers no pack provides (rifle crack, charge hum). */
 export class Audio {
-  private ctx: Ctx | null = null;
+  private ctx: AudioContext | null = null;
   private master!: GainNode;
   private bus!: GainNode;
+  private musicBus!: GainNode;
   private lowpass!: BiquadFilterNode;
-  private reverb!: ConvolverNode;
   private reverbSend!: GainNode;
   private noiseBuf!: AudioBuffer;
-  private wind: AudioBufferSourceNode | null = null;
+  private readonly raw = new Map<string, ArrayBuffer>();
+  private readonly buffers = new Map<string, AudioBuffer>();
+  private music: { name: MusicName; src: AudioBufferSourceNode; gain: GainNode } | null = null;
+  private wantMusic: MusicName | null = null;
   private chargeOsc: OscillatorNode | null = null;
   private chargeOsc2: OscillatorNode | null = null;
   private chargeGain: GainNode | null = null;
   private readonly listenerPos = new THREE.Vector3();
   private readonly listenerRight = new THREE.Vector3(1, 0, 0);
+  private slow = 0;
   volume = 0.8;
+  musicVolume = 0.32;
+
+  /** Fetch all files (no AudioContext needed yet). */
+  async preload(): Promise<void> {
+    const files: Array<[string, string]> = [
+      ...SFX.map((n) => [n, `${BASE}sfx/${n}.ogg`] as [string, string]),
+      ['music:menu', `${BASE}music/menu.ogg`],
+      ['music:battle', `${BASE}music/battle.ogg`],
+    ];
+    await Promise.all(
+      files.map(async ([name, url]) => {
+        try {
+          const res = await fetch(url);
+          if (res.ok) this.raw.set(name, await res.arrayBuffer());
+        } catch {
+          // Missing audio must never block the game.
+        }
+      }),
+    );
+  }
 
   unlock(): void {
     if (this.ctx) {
@@ -31,7 +88,7 @@ export class Audio {
     this.master = ctx.createGain();
     this.master.gain.value = this.volume;
     const comp = ctx.createDynamicsCompressor();
-    comp.threshold.value = -14;
+    comp.threshold.value = -12;
     comp.ratio.value = 4;
     comp.attack.value = 0.003;
     comp.release.value = 0.2;
@@ -39,28 +96,39 @@ export class Audio {
     this.lowpass.type = 'lowpass';
     this.lowpass.frequency.value = 20000;
     this.bus = ctx.createGain();
+    this.musicBus = ctx.createGain();
+    this.musicBus.gain.value = this.musicVolume;
     this.bus.connect(this.lowpass);
+    this.musicBus.connect(this.lowpass);
     this.lowpass.connect(comp);
     comp.connect(this.master);
     this.master.connect(ctx.destination);
-    // Noise buffer
     const len = ctx.sampleRate * 2;
     this.noiseBuf = ctx.createBuffer(1, len, ctx.sampleRate);
     const d = this.noiseBuf.getChannelData(0);
     for (let i = 0; i < len; i += 1) d[i] = Math.random() * 2 - 1;
-    // Reverb impulse
-    this.reverb = ctx.createConvolver();
-    const irLen = ctx.sampleRate * 2.4;
+    const reverb = ctx.createConvolver();
+    const irLen = ctx.sampleRate * 2.2;
     const ir = ctx.createBuffer(2, irLen, ctx.sampleRate);
     for (let c = 0; c < 2; c += 1) {
       const ch = ir.getChannelData(c);
       for (let i = 0; i < irLen; i += 1) ch[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / irLen, 3.2);
     }
-    this.reverb.buffer = ir;
+    reverb.buffer = ir;
     this.reverbSend = ctx.createGain();
-    this.reverbSend.gain.value = 0.35;
-    this.reverbSend.connect(this.reverb);
-    this.reverb.connect(this.lowpass);
+    this.reverbSend.gain.value = 0.3;
+    this.reverbSend.connect(reverb);
+    reverb.connect(this.lowpass);
+    // Decode everything in the background.
+    for (const [name, data] of this.raw) {
+      ctx.decodeAudioData(data.slice(0)).then(
+        (buf) => {
+          this.buffers.set(name, buf);
+          if (this.wantMusic && name === `music:${this.wantMusic}` && !this.music) this.playMusic(this.wantMusic);
+        },
+        () => {},
+      );
+    }
     this.startWind();
   }
 
@@ -69,16 +137,58 @@ export class Audio {
     this.listenerRight.set(Math.cos(yaw), 0, -Math.sin(yaw));
   }
 
-  /** 0 = normal, 1 = full slow motion muffling. */
+  /** 0 = normal, 1 = full slow motion. */
   setSlowmo(k: number): void {
+    this.slow = k;
     if (!this.ctx) return;
-    const f = 20000 * Math.pow(1 - k * 0.94, 2.2) + 500 * k;
-    this.lowpass.frequency.setTargetAtTime(f, this.ctx.currentTime, 0.05);
+    const t = this.ctx.currentTime;
+    const f = 20000 * Math.pow(1 - k * 0.92, 2.2) + 600 * k;
+    this.lowpass.frequency.setTargetAtTime(f, t, 0.05);
+    if (this.music) this.music.src.playbackRate.setTargetAtTime(1 - k * 0.22, t, 0.08);
+  }
+
+  // ---------------- music ----------------
+
+  playMusic(name: MusicName | null): void {
+    this.wantMusic = name;
+    const ctx = this.ctx;
+    if (!ctx) return;
+    if (this.music?.name === name) return;
+    const t = ctx.currentTime;
+    if (this.music) {
+      const old = this.music;
+      old.gain.gain.setTargetAtTime(0, t, 0.4);
+      setTimeout(() => old.src.stop(), 2500);
+      this.music = null;
+    }
+    if (!name) return;
+    const buf = this.buffers.get(`music:${name}`);
+    if (!buf) return; // will start once decoded
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.loop = true;
+    const gain = ctx.createGain();
+    gain.gain.value = 0.0001;
+    gain.gain.setTargetAtTime(name === 'menu' ? 0.8 : 1, t, 0.5);
+    src.connect(gain).connect(this.musicBus);
+    src.start();
+    this.music = { name, src, gain };
+  }
+
+  /** Duck music under big moments. */
+  private duck(amount: number, time: number): void {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime;
+    const g = this.musicBus.gain;
+    g.cancelScheduledValues(t);
+    g.setValueAtTime(g.value, t);
+    g.linearRampToValueAtTime(this.musicVolume * amount, t + 0.03);
+    g.setTargetAtTime(this.musicVolume, t + time, 0.25);
   }
 
   // ---------------- primitives ----------------
 
-  private out(pos?: THREE.Vector3, gain = 1, reverb = 0.2): AudioNode | null {
+  private route(pos: THREE.Vector3 | undefined, gain: number, reverb: number): GainNode | null {
     const ctx = this.ctx;
     if (!ctx || ctx.state !== 'running') return null;
     const g = ctx.createGain();
@@ -106,11 +216,27 @@ export class Audio {
     return g;
   }
 
+  /** Play one of the given samples (random variant). */
+  play(names: Sfx | Sfx[], o: PlayOpts = {}): void {
+    const list = Array.isArray(names) ? names : [names];
+    const name = list[Math.floor(Math.random() * list.length)];
+    const buf = this.buffers.get(name);
+    const out = this.route(o.pos, o.gain ?? 1, o.reverb ?? 0.1);
+    if (!buf || !out || !this.ctx) return;
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const v = o.rateVar ?? 0.06;
+    let rate = (o.rate ?? 1) * (1 + (Math.random() - 0.5) * 2 * v);
+    if (o.world) rate *= 1 - this.slow * 0.35;
+    src.playbackRate.value = rate;
+    src.connect(out);
+    src.start(this.ctx.currentTime + (o.delay ?? 0));
+  }
+
   private noise(dest: AudioNode, t0: number, dur: number, type: BiquadFilterType, f0: number, f1: number, q: number, peak: number, attack = 0.002): void {
     const ctx = this.ctx!;
     const src = ctx.createBufferSource();
     src.buffer = this.noiseBuf;
-    src.playbackRate.value = 0.8 + Math.random() * 0.4;
     const filt = ctx.createBiquadFilter();
     filt.type = type;
     filt.Q.value = q;
@@ -140,104 +266,69 @@ export class Audio {
     o.stop(t0 + dur + 0.05);
   }
 
-  private get now(): number {
-    return this.ctx?.currentTime ?? 0;
-  }
-
   // ---------------- player weapon ----------------
 
   shot(): void {
-    const o = this.out(undefined, 1, 0.9);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.035, 'highpass', 3000, 2000, 0.7, 1.2, 0.001); // crack
-    this.noise(o, t, 0.5, 'lowpass', 7000, 300, 0.8, 1.0, 0.002); // blast
-    this.tone(o, t, 0.42, 'sine', 140, 38, 1.1, 0.002); // thump
-    this.tone(o, t, 0.12, 'triangle', 420, 90, 0.35);
-    this.noise(o, t + 0.05, 1.3, 'lowpass', 1400, 120, 0.5, 0.25, 0.04); // rolling echo
+    // No rifle samples in the Kenney packs: synthesized crack + Kenney low explosion for body.
+    const o = this.route(undefined, 0.9, 0.9);
+    if (o) {
+      const t = this.ctx!.currentTime;
+      this.noise(o, t, 0.035, 'highpass', 3000, 2000, 0.7, 1.1, 0.001);
+      this.noise(o, t, 0.35, 'lowpass', 7000, 400, 0.8, 0.7, 0.002);
+      this.tone(o, t, 0.3, 'sine', 150, 40, 0.8, 0.002);
+    }
+    this.play(['lowFrequency_explosion_000', 'lowFrequency_explosion_001'], { gain: 0.9, rate: 1.35, reverb: 0.6 });
+    this.play('impactMetal_heavy_000', { gain: 0.25, rate: 1.6 });
+    this.duck(0.45, 0.25);
   }
 
   dry(): void {
-    const o = this.out(undefined, 0.5, 0);
-    if (!o) return;
-    this.noise(o, this.now, 0.03, 'bandpass', 2500, 2000, 6, 0.6);
+    this.play('click_002', { gain: 0.6, rate: 0.8 });
   }
 
   boltOpen(): void {
-    const o = this.out(undefined, 0.7, 0.1);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.03, 'bandpass', 3200, 2600, 8, 0.9);
-    this.tone(o, t, 0.06, 'square', 1900, 1500, 0.08);
-    this.noise(o, t + 0.07, 0.07, 'bandpass', 1800, 900, 4, 0.6);
+    this.play('metalLatch', { gain: 0.8, rate: 1.15 });
   }
 
   boltClose(): void {
-    const o = this.out(undefined, 0.8, 0.1);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.05, 'bandpass', 1500, 700, 5, 1.0);
-    this.tone(o, t, 0.05, 'triangle', 600, 200, 0.4);
-    this.noise(o, t + 0.01, 0.03, 'bandpass', 4200, 3000, 10, 0.5);
+    this.play('metalClick', { gain: 0.9, rate: 0.95 });
+    this.play(['impactMetal_light_000', 'impactMetal_light_001', 'impactMetal_light_002'], { gain: 0.45, rate: 1.3 });
   }
 
   boltLock(): void {
-    const o = this.out(undefined, 0.6, 0.05);
-    if (!o) return;
-    this.noise(o, this.now, 0.025, 'bandpass', 3800, 3000, 9, 0.8);
+    this.play('click_002', { gain: 0.5, rate: 1.2 });
   }
 
   casing(): void {
-    const o = this.out(undefined, 0.35, 0.15);
-    if (!o) return;
-    const t = this.now + 0.32;
-    for (let i = 0; i < 3; i += 1) {
-      const tt = t + i * (0.11 - i * 0.025);
-      const v = 0.5 / (i + 1);
-      this.tone(o, tt, 0.12, 'sine', 4800 + Math.random() * 600, 4600, v, 0.001);
-      this.tone(o, tt, 0.08, 'sine', 7200 + Math.random() * 600, 7000, v * 0.6, 0.001);
-    }
+    this.play(['impactGlass_light_000', 'impactGlass_light_001'], { gain: 0.25, rate: 2.2, delay: 0.32, rateVar: 0.1 });
+    this.play('impactTin_medium_000', { gain: 0.15, rate: 2.6, delay: 0.47, rateVar: 0.1 });
   }
 
   magOut(): void {
-    const o = this.out(undefined, 0.6, 0.05);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.04, 'bandpass', 2000, 1500, 6, 0.8);
-    this.noise(o, t + 0.05, 0.12, 'lowpass', 1200, 300, 1, 0.3);
+    this.play(['beltHandle1', 'beltHandle2'], { gain: 0.8, rate: 1.1 });
   }
 
   magIn(): void {
-    const o = this.out(undefined, 0.8, 0.05);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.05, 'bandpass', 1300, 800, 5, 1.0);
-    this.tone(o, t, 0.06, 'triangle', 300, 120, 0.4);
-    this.noise(o, t + 0.03, 0.02, 'bandpass', 4000, 3500, 10, 0.5);
+    this.play('impactPlate_light_000', { gain: 0.7, rate: 1.2 });
+    this.play('metalClick', { gain: 0.5, rate: 1.3, delay: 0.03 });
   }
 
   magSlap(): void {
-    const o = this.out(undefined, 0.5, 0.05);
-    if (!o) return;
-    this.noise(o, this.now, 0.06, 'lowpass', 900, 200, 1, 0.8);
+    this.play('impactSoft_medium_000', { gain: 0.7 });
   }
 
   daggerDraw(): void {
-    const o = this.out(undefined, 0.6, 0.3);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.25, 'highpass', 3000, 9000, 1, 0.5, 0.02);
-    this.tone(o, t + 0.05, 0.6, 'sine', 3150, 3100, 0.12, 0.01);
-    this.tone(o, t + 0.05, 0.5, 'sine', 4730, 4700, 0.06, 0.01);
+    this.play(['drawKnife1', 'drawKnife2', 'drawKnife3'], { gain: 0.9, reverb: 0.3 });
   }
 
   chargeStart(): void {
+    this.play('forceField_000', { gain: 0.35, rate: 1.2 });
     const ctx = this.ctx;
     if (!ctx || ctx.state !== 'running') return;
     this.chargeStop();
     const g = ctx.createGain();
     g.gain.value = 0.0001;
-    g.gain.exponentialRampToValueAtTime(0.12, ctx.currentTime + 0.1);
+    g.gain.exponentialRampToValueAtTime(0.08, ctx.currentTime + 0.1);
     const o1 = ctx.createOscillator();
     o1.type = 'sawtooth';
     o1.frequency.value = 110;
@@ -261,14 +352,13 @@ export class Audio {
     if (!this.ctx || !this.chargeOsc || !this.chargeOsc2) return;
     const t = this.ctx.currentTime;
     this.chargeOsc.frequency.setTargetAtTime(110 + k * 160, t, 0.03);
-    this.chargeOsc2.frequency.setTargetAtTime(440 + k * 900 + Math.sin(t * 60) * 20 * k, t, 0.02);
+    this.chargeOsc2.frequency.setTargetAtTime(440 + k * 900, t, 0.02);
   }
 
   chargeStop(): void {
     if (!this.ctx) return;
-    const t = this.ctx.currentTime;
     if (this.chargeGain) {
-      this.chargeGain.gain.setTargetAtTime(0.0001, t, 0.03);
+      this.chargeGain.gain.setTargetAtTime(0.0001, this.ctx.currentTime, 0.03);
       const o1 = this.chargeOsc;
       const o2 = this.chargeOsc2;
       setTimeout(() => {
@@ -281,174 +371,124 @@ export class Audio {
   }
 
   dash(): void {
-    const o = this.out(undefined, 0.8, 0.2);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.28, 'bandpass', 400, 3000, 1.5, 0.9, 0.03);
-    this.tone(o, t, 0.25, 'sine', 180, 60, 0.4);
+    this.play(['cloth1', 'cloth2', 'cloth3'], { gain: 1, rate: 0.75 });
+    this.play('thrusterFire_000', { gain: 0.35, rate: 1.6 });
   }
 
   slash(): void {
-    const o = this.out(undefined, 0.9, 0.25);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.18, 'bandpass', 1200, 6000, 2, 1.0, 0.01);
-    this.tone(o, t + 0.02, 0.35, 'sine', 2600, 2400, 0.12);
+    this.play(['knifeSlice', 'knifeSlice2'], { gain: 1, rate: 0.9, reverb: 0.2 });
   }
 
   slashHit(): void {
-    const o = this.out(undefined, 1, 0.7);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.4, 'lowpass', 5000, 200, 0.7, 1.1, 0.001);
-    this.tone(o, t, 0.5, 'sine', 120, 35, 1.0);
-    this.tone(o, t, 0.9, 'sine', 880, 860, 0.18, 0.001);
-    this.tone(o, t, 0.7, 'sine', 1397, 1380, 0.12, 0.001);
-    this.noise(o, t + 0.02, 0.6, 'highpass', 6000, 3000, 1, 0.25, 0.01); // sizzle
+    this.play('chop', { gain: 1, rate: 0.8 });
+    this.play(['impactMetal_heavy_000', 'impactMetal_heavy_001', 'impactMetal_heavy_002'], { gain: 0.9, reverb: 0.5 });
+    this.play(['explosionCrunch_000', 'explosionCrunch_001'], { gain: 0.5, rate: 1.1 });
+    this.duck(0.3, 0.5);
   }
 
   // ---------------- movement ----------------
 
   whoosh(strength = 1): void {
-    const o = this.out(undefined, 0.6 * strength, 0.1);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.5, 'bandpass', 300, 1400, 1.2, 0.8, 0.12);
+    this.play(['cloth1', 'cloth2', 'cloth3'], { gain: 0.7 * strength, rate: 0.6, rateVar: 0.1 });
   }
 
   jump(): void {
-    const o = this.out(undefined, 0.35, 0);
-    if (!o) return;
-    this.noise(o, this.now, 0.1, 'lowpass', 900, 200, 1, 0.6);
+    this.play(['cloth1', 'cloth2'], { gain: 0.4, rate: 1.1 });
   }
 
   land(impact: number): void {
-    const o = this.out(undefined, 0.4 + impact * 0.6, 0.05);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.15 + impact * 0.2, 'lowpass', 1200, 120, 1, 0.9);
-    this.tone(o, t, 0.2, 'sine', 90, 40, 0.5 * impact + 0.1);
+    this.play(['footstep_grass_000', 'footstep_grass_002', 'footstep_grass_004'], { gain: 0.5 + impact * 0.5, rate: 0.85 });
+    if (impact > 0.2) this.play(['impactSoft_heavy_000', 'impactSoft_heavy_001'], { gain: impact });
   }
 
   step(): void {
-    const o = this.out(undefined, 0.12, 0);
-    if (!o) return;
-    this.noise(o, this.now, 0.07, 'bandpass', 700 + Math.random() * 400, 300, 1.5, 0.6);
+    this.play(['footstep_grass_000', 'footstep_grass_001', 'footstep_grass_002', 'footstep_grass_003', 'footstep_grass_004'], { gain: 0.3, rateVar: 0.1 });
   }
 
   // ---------------- feedback ----------------
 
   hitmarker(): void {
-    const o = this.out(undefined, 0.5, 0);
-    if (!o) return;
-    const t = this.now;
-    this.tone(o, t, 0.05, 'square', 1300, 1200, 0.15, 0.001);
-    this.noise(o, t, 0.05, 'bandpass', 2500, 2000, 4, 0.5);
+    this.play('tick_001', { gain: 0.7 });
+    this.play(['impactMetal_light_000', 'impactMetal_light_001'], { gain: 0.35, rate: 1.4 });
   }
 
   headshot(): void {
-    const o = this.out(undefined, 0.9, 0.4);
-    if (!o) return;
-    const t = this.now;
-    this.tone(o, t, 0.7, 'sine', 1760, 1750, 0.35, 0.001);
-    this.tone(o, t, 0.6, 'sine', 2637, 2630, 0.18, 0.001);
-    this.tone(o, t + 0.06, 0.7, 'sine', 3520, 3510, 0.1, 0.001);
-    this.noise(o, t, 0.1, 'bandpass', 1600, 900, 2, 0.9); // crunch
-    this.noise(o, t, 0.4, 'lowpass', 3000, 200, 1, 0.5);
+    this.play(['impactBell_heavy_000', 'impactBell_heavy_001'], { gain: 0.8, rate: 1.25, reverb: 0.5, rateVar: 0.02 });
+    this.play(['impactMetal_heavy_000', 'impactMetal_heavy_001'], { gain: 0.8 });
+    this.play(['explosionCrunch_000', 'explosionCrunch_002'], { gain: 0.45, rate: 1.3 });
+    this.duck(0.35, 0.6);
   }
 
   kill(): void {
-    const o = this.out(undefined, 0.7, 0.3);
-    if (!o) return;
-    const t = this.now;
-    this.tone(o, t, 0.4, 'sine', 1175, 1170, 0.25, 0.001);
-    this.tone(o, t + 0.07, 0.45, 'sine', 1568, 1560, 0.2, 0.001);
+    this.play('confirmation_001', { gain: 0.6 });
   }
 
   hurt(): void {
-    const o = this.out(undefined, 0.9, 0.1);
-    if (!o) return;
-    const t = this.now;
-    this.tone(o, t, 0.25, 'sawtooth', 180, 60, 0.35);
-    this.noise(o, t, 0.2, 'lowpass', 1500, 200, 1, 0.8);
+    this.play(['impactPunch_heavy_000', 'impactPunch_heavy_001'], { gain: 0.9, rate: 0.9 });
+  }
+
+  punchHit(): void {
+    this.play(['impactPunch_heavy_000', 'impactPunch_heavy_001'], { gain: 1 });
+    this.play('impactSoft_heavy_000', { gain: 0.7 });
   }
 
   slowIn(): void {
-    const o = this.out(undefined, 0.7, 0.4);
-    if (!o) return;
-    const t = this.now;
-    this.tone(o, t, 0.6, 'sine', 320, 55, 0.5, 0.01);
-    this.noise(o, t, 0.5, 'lowpass', 3000, 150, 1, 0.4, 0.02);
+    this.play('phaserDown1', { gain: 0.5, rate: 0.7, reverb: 0.4 });
   }
 
   slowOut(): void {
-    const o = this.out(undefined, 0.5, 0.2);
-    if (!o) return;
-    const t = this.now;
-    this.tone(o, t, 0.35, 'sine', 70, 280, 0.35, 0.01);
+    this.play('phaserUp1', { gain: 0.35, rate: 0.8 });
   }
 
   waveStart(): void {
-    const o = this.out(undefined, 0.5, 0.5);
-    if (!o) return;
-    const t = this.now;
-    for (const [i, f] of [220, 277, 330].entries()) {
-      this.tone(o, t + i * 0.02, 1.4, 'sawtooth', f, f, 0.08, 0.05);
-    }
-    this.tone(o, t, 1.2, 'sine', 55, 50, 0.5, 0.05);
+    this.play('jingles_STEEL05', { gain: 0.8, rateVar: 0 });
+    this.play('lowDown', { gain: 0.4, rate: 0.7 });
   }
 
   waveClear(): void {
-    const o = this.out(undefined, 0.5, 0.5);
-    if (!o) return;
-    const t = this.now;
-    [523, 659, 784, 1047].forEach((f, i) => this.tone(o, t + i * 0.09, 0.5, 'triangle', f, f, 0.25, 0.005));
+    this.play('jingles_HIT10', { gain: 0.9, rateVar: 0 });
+  }
+
+  gameOver(): void {
+    this.play('jingles_PIZZI10', { gain: 0.9, rateVar: 0 });
+  }
+
+  uiClick(): void {
+    this.play('click_002', { gain: 0.6, rateVar: 0 });
   }
 
   // ---------------- enemies ----------------
 
   world(name: string, pos: THREE.Vector3): void {
-    const o = this.out(pos, 1, 0.3);
-    if (!o) return;
-    const t = this.now;
+    const w = { pos, world: true };
     switch (name) {
       case 'spawnBeam':
-        this.tone(o, t, 1.0, 'sawtooth', 80, 600, 0.12, 0.3);
-        this.noise(o, t, 1.0, 'bandpass', 300, 3000, 2, 0.25, 0.4);
+        this.play('forceField_001', { ...w, gain: 0.9 });
+        this.play('thrusterFire_000', { ...w, gain: 0.6, rate: 0.7, delay: 0.5 });
         break;
       case 'land':
-        this.noise(o, t, 0.5, 'lowpass', 1500, 80, 1, 1.0);
-        this.tone(o, t, 0.4, 'sine', 70, 30, 0.8);
+        this.play(['lowFrequency_explosion_000', 'lowFrequency_explosion_001'], { ...w, gain: 1.1 });
+        this.play('impactMining_000', { ...w, gain: 0.8, rate: 0.7 });
         break;
       case 'charge':
-        this.tone(o, t, 0.85, 'sine', 300, 1600, 0.25, 0.4);
-        this.tone(o, t, 0.85, 'square', 150, 800, 0.05, 0.4);
+        this.play('phaserUp3', { ...w, gain: 0.8, rate: 0.9 });
         break;
       case 'plasma':
-        this.tone(o, t, 0.25, 'square', 1100, 160, 0.3, 0.002);
-        this.noise(o, t, 0.2, 'bandpass', 2000, 500, 2, 0.5);
+        this.play(['laserLarge_000', 'laserLarge_001', 'laserLarge_002'], { ...w, gain: 1, reverb: 0.3 });
         break;
       case 'plasmaHitWall':
-        this.noise(o, t, 0.25, 'bandpass', 1800, 400, 1.5, 0.6);
+        this.play(['impactMetal_000', 'impactMetal_001'], { ...w, gain: 0.7 });
         break;
       case 'punchSwing':
-        this.noise(o, t + 0.12, 0.2, 'bandpass', 300, 1200, 1.5, 0.5, 0.05);
+        this.play(['cloth1', 'cloth2', 'cloth3'], { ...w, gain: 0.8, rate: 0.7, delay: 0.1 });
         break;
       case 'explode':
-        this.noise(o, t, 1.4, 'lowpass', 2500, 60, 0.7, 1.2, 0.005);
-        this.tone(o, t, 0.8, 'sine', 90, 25, 1.0);
+        this.play(['explosionCrunch_000', 'explosionCrunch_001', 'explosionCrunch_002'], { ...w, gain: 1.2, reverb: 0.5 });
+        this.play('lowFrequency_explosion_000', { ...w, gain: 1 });
         break;
       default:
         break;
     }
-  }
-
-  punchHit(): void {
-    const o = this.out(undefined, 1, 0.1);
-    if (!o) return;
-    const t = this.now;
-    this.noise(o, t, 0.2, 'lowpass', 900, 100, 1, 1.0);
-    this.tone(o, t, 0.2, 'sine', 80, 40, 0.8);
   }
 
   private startWind(): void {
@@ -461,20 +501,12 @@ export class Audio {
     f.frequency.value = 400;
     f.Q.value = 0.5;
     const g = ctx.createGain();
-    g.gain.value = 0.04;
-    const lfo = ctx.createOscillator();
-    lfo.frequency.value = 0.12;
-    const lfoGain = ctx.createGain();
-    lfoGain.gain.value = 220;
-    lfo.connect(lfoGain).connect(f.frequency);
+    g.gain.value = 0.025;
     src.connect(f).connect(g).connect(this.bus);
     src.start();
-    lfo.start();
-    this.wind = src;
   }
 
   dispose(): void {
-    this.wind?.stop();
     void this.ctx?.close();
   }
 }

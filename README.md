@@ -57,7 +57,11 @@ game/src/
 전부 CC0.
 - 로봇: RobotExpressive — Tomás Laulhé (Quaternius), three.js 예제 저장소 경유
 - 지형 소품: [Kenney](https://kenney.nl) Nature Kit, Space Kit
-- 토끼 앞발/스나이퍼/단검/절벽/잔디/사운드: 코드로 직접 생성
+- 효과음: [Kenney](https://kenney.nl) Impact / Sci-fi / Interface / Digital / RPG Audio, Music Jingles
+- BGM: OpenGameArt — "Fast fight / battle music (looped)" (xcvg), "Flowerbed Fields [Loop]" (Zane Little Music)
+- 저격 총성: Kenney 팩에 총소리가 없어서 합성 크랙음 + Kenney 저주파 폭발음을 겹쳐 사용
+- 토끼 앞발/스나이퍼/단검/절벽/잔디: 코드로 직접 생성
+- 자세한 오디오 출처: `game/public/assets/audio/CREDITS.md`
 
 ## 설치된 Claude Code 스킬 (`.claude/skills`)
 

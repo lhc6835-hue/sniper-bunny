@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="theme-color" content="#111312" />
+    <link rel="icon" href="data:," />
+    <title>Sniper Bunny</title>
+  </head>
+  <body>
+    <main id="app">
+      <canvas id="game-canvas" aria-label="Sniper Bunny game canvas"></canvas>
+
+      <div id="hud" class="hidden">
+        <div id="scope" aria-hidden="true">
+          <div class="scope-lens"></div>
+          <svg class="scope-reticle" viewBox="-100 -100 200 200">
+            <line x1="-100" y1="0" x2="-6" y2="0" />
+            <line x1="6" y1="0" x2="100" y2="0" />
+            <line x1="0" y1="-100" x2="0" y2="-6" />
+            <line x1="0" y1="6" x2="0" y2="100" />
+            <line class="thick" x1="-100" y1="0" x2="-55" y2="0" />
+            <line class="thick" x1="55" y1="0" x2="100" y2="0" />
+            <line class="thick" x1="0" y1="55" x2="0" y2="100" />
+            <g class="mils">
+              <circle cx="-15" cy="0" r="1.2" /><circle cx="-30" cy="0" r="1.2" /><circle cx="-45" cy="0" r="1.2" />
+              <circle cx="15" cy="0" r="1.2" /><circle cx="30" cy="0" r="1.2" /><circle cx="45" cy="0" r="1.2" />
+              <circle cx="0" cy="15" r="1.2" /><circle cx="0" cy="30" r="1.2" /><circle cx="0" cy="45" r="1.2" />
+              <circle cx="0" cy="-15" r="1.2" /><circle cx="0" cy="-30" r="1.2" />
+            </g>
+            <circle class="center" cx="0" cy="0" r="1.4" />
+          </svg>
+          <div id="scope-range">--- m</div>
+        </div>
+
+        <div id="crosshair"><i class="t"></i><i class="b"></i><i class="l"></i><i class="r"></i><b></b></div>
+        <svg id="charge-ring" viewBox="0 0 100 100">
+          <circle class="bg" cx="50" cy="50" r="40" />
+          <circle class="fg" cx="50" cy="50" r="40" />
+        </svg>
+        <div id="hitmarker"><i></i><i></i><i></i><i></i></div>
+        <div id="lock"><i></i><i></i><i></i><i></i><span>LOCK</span></div>
+        <div id="combo"></div>
+        <div id="popups"></div>
+        <div id="damage-dirs"></div>
+        <div id="killfeed"></div>
+
+        <div id="top">
+          <div id="wave-label">WAVE <b id="wave-num">1</b></div>
+          <div id="enemies-left">남은 로봇 <b id="enemy-count">0</b></div>
+          <div id="score">0</div>
+        </div>
+        <div id="banner"><div class="big"></div><div class="small"></div></div>
+
+        <div id="bottom-left">
+          <div class="bunny-icon">
+            <svg viewBox="0 0 64 64"><path d="M22 4c4 0 6 10 6 18 2-1 6-1 8 0 0-8 2-18 6-18s3 12 0 22c5 4 8 9 8 16 0 11-8 18-18 18S14 53 14 42c0-7 3-12 8-16-3-10-4-22 0-22z" /><circle cx="26" cy="40" r="2.5" class="eye" /><circle cx="38" cy="40" r="2.5" class="eye" /></svg>
+          </div>
+          <div class="bars">
+            <div class="bar hp"><div id="hp-fill"></div><span id="hp-text">100</span></div>
+            <div class="bar focus"><div id="focus-fill"></div><span>FOCUS</span></div>
+          </div>
+        </div>
+        <div id="jumps"><i></i><i></i><i></i></div>
+        <div id="bottom-right">
+          <div id="ammo"></div>
+          <div id="ammo-hint">R 재장전</div>
+          <div class="weapon-name">SNIPER · <span id="weapon-sub">볼트액션</span></div>
+        </div>
+      </div>
+
+      <div id="overlay">
+        <div class="panel">
+          <h1>SNIPER <span>BUNNY</span></h1>
+          <p class="tag">공중의 토끼 저격수 vs 로봇 군단</p>
+          <div id="loading"><div id="loading-fill"></div></div>
+          <div id="menu" class="hidden">
+            <button id="play-btn" type="button">클릭해서 시작</button>
+            <div class="controls">
+              <div><kbd>WASD</kbd> 이동</div>
+              <div><kbd>Space</kbd> 점프</div>
+              <div><kbd>Shift</kbd> 플립 점프 (공중 2회 추가)</div>
+              <div><kbd>우클릭</kbd> 스코프 + 슬로모션</div>
+              <div><kbd>좌클릭</kbd> 발사</div>
+              <div><kbd>F</kbd> 꾹 누르기 → 놓으면 단검 대쉬</div>
+              <div><kbd>R</kbd> 재장전</div>
+              <div><kbd>Esc</kbd> 일시정지</div>
+            </div>
+            <p class="tip">헤드샷은 한 방. 단검 대쉬도 한 방. 포커스 게이지를 아껴 쓰세요.</p>
+          </div>
+          <div id="gameover" class="hidden">
+            <h2>토끼가 쓰러졌다</h2>
+            <div class="stats"></div>
+            <button id="retry-btn" type="button">다시 하기</button>
+          </div>
+        </div>
+      </div>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
